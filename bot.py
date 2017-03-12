@@ -27,8 +27,9 @@ frequency parameters
 
 TICK_TIME = 1       # seconds
 ANSWER_TIME = 7     # seconds
-REFRESH_TIME = 53   # seconds
+REFRESH_TIME = 47   # seconds
 REQUEST_PER_SECOND = 3 #
+STATS_UPDATE_TIME = 50
 wait_between_req = 1 / REQUEST_PER_SECOND
 """
 answer parameters
@@ -53,19 +54,23 @@ class Bot:
     name = "bot"
     API = 0
     tick = 0
-    log = 0
+    stats = 0
+    current_stats = {'msg': 0, 'posts': 0, 'uptime': 0}
+    global_stats = {'msg': 0, 'posts': 0, 'uptime': 0}
     parameters = {}
     replycs = {}
     commands = {}
     other = {}
     config=0
     start_time = 0
-    votekick = {'+':0, '-':0, 'voted':[]}
-
+    votekick = {'+': 0, '-': 0, 'voted':[]}
+    answered_messages = {'before': [], 'now': [], 'count': 0}
+    sent_posts = {'before': [], 'now': [], 'count': 0}
+    uptime = 0
     def __init__(self, API, name):
         self.name = name
         self.API = API
-        self.log = name + '.log'
+        self.stats = name + '.stats'
         self.attributes = name + '.attributes'
         self.config = name + '.config'
         self.init_files()
@@ -78,38 +83,60 @@ class Bot:
             sleep(TICK_TIME)
             self.tick += TICK_TIME
 
-            if self.tick % ANSWER_TIME == 0:
-                print("trying to find messages")
-                self.answer(MESSAGES_COUNT)
-            if self.tick % REFRESH_TIME == 0:
-                print("trying to repost")
-                self.refresh()
-                self.tick = 0
+            try:
+                if self.tick % ANSWER_TIME == 0:
+                    print("trying to find messages")
+                    self.answer(MESSAGES_COUNT)
+                    self.answered_messages['count'] += len(self.answered_messages['now'])
+                    self.answered_messages['before'] = self.answered_messages['now']
+                    self.answered_messages['now'] = []
+                    print(self.answered_messages)
+                if self.tick % REFRESH_TIME == 0:
+                    print("trying to repost")
+                    self.refresh()
+                    self.sent_posts['count'] += len(self.sent_posts['now'])
+                    self.sent_posts['before'] = self.sent_posts['now']
+                    self.sent_posts['now'] = []
+                    print("posts:")
+                    print(self.sent_posts)
+                if self.tick % STATS_UPDATE_TIME == 0:
+                    work_time = self.API.utils.getServerTime() - self.start_time
+                    self.current_stats['uptime'] += work_time
+                    self.current_stats['msg'] += self.answered_messages['count']
+                    self.current_stats['posts'] += self.sent_posts['count']
 
-    def log_add(self, msg, index):
-        time = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
-        msg = str(msg)
+                    if not(self.stats_add(self.answered_messages['count'], self.sent_posts['count'], work_time)):
+                        self.start_time += work_time
+                        self.sent_posts['count'] = 0
+                        self.answered_messages['count'] = 0
+                    else:
+                        print("Stat write error!")
+                    self.tick = 0
+
+
+            except vk.exceptions.VkAPIError as e:
+                print("API error:" + str(e.errno))
+
+    def stats_add(self, msg, posts, work_time):
         try:
-            log = open(self.log, 'a')
-
-            if index == 0:
-                log.write(time + ' \o ' + msg)
-                log.write('\n')
-            elif index == 1:
-                log.write(time + '==> ERROR! ' + msg)
-                log.write('\n')
-            elif index == 2:
-                log.write("___________________")
-                log.write('\n')
-                log.write(time + '==>BOT PANIC ' + msg)
-                log.write('\n')
-                log.write("^^^^^^^^^^^^^^^^^")
-                log.write('\n')
-            log.close()
-            return 0
-        except:
-            print("Error while writing to log...")
+            statsfile = open(self.stats, 'r')
+            lines = statsfile.readlines()
+            self.global_stats['msg'] = msg + int(lines[0].split(' ')[1])
+            self.global_stats['posts'] = posts + int(lines[1].split(' ')[1])
+            self.global_stats['uptime'] = work_time + int(lines[2].split(' ')[1])
+            statsfile.close()
+        except OSError as e:
+            print("Error reading statsfile")
             return -1
+        try:
+            statsfile = open(self.stats, 'w')
+            statsfile.write("msg: " + str(self.global_stats['msg']) + "\nposts: " + str(self.global_stats['posts']) \
+                            + "\nuptime: " + str(self.global_stats['uptime']))
+        except OSError as e:
+            print("Error writing to statsfile")
+            return -1
+        return 0
+
 
     def send_repost(self, post):
         print(post)
@@ -136,20 +163,20 @@ class Bot:
             sleep(wait_between_req)
             y = self.API.wall.get(owner_id=-int(x), count=posts_count, query='vk')['items']
             print(y)
-            #except:
-               # self.log_add("cant get posts", 1)
-
             for post in y:
-                if time - int(post['date']) <= time_offset:
+                if (time - int(post['date']) <= time_offset) and not(post['id'] in self.sent_posts['before']):
                     print(post)
+
                     all.append(post)
 
         if all:
-            all = [('wall' + str(x['owner_id']) + '_' + str(x['id'])) for x in all]
-            print(all)
+            sendposts = [('wall' + str(x['owner_id']) + '_' + str(x['id'])) for x in all]
+
+            print(sendposts)
+
 
             for k, v in conv.items():
-                for x in all:
+                for x in sendposts:
                     if x.split('-')[1].split('_')[0] in v:
                         sleep(wait_between_req)
                         addr_id = k
@@ -159,7 +186,8 @@ class Bot:
                             addr_id = int(addr_id)
                             addr_id += 2000000000
                         self.API.messages.send(peer_id = addr_id, message = msg[randint(0, len(msg)-1)], attachment=x)
-
+                        if not(int(x.split('_')[1]) in self.sent_posts['now']):
+                            self.sent_posts['now'].append(int(x.split('_')[1]))
 
         else:
 
@@ -220,9 +248,6 @@ class Bot:
             sendmsg += "Голосованием было решено, что пользователь НЕ БУДЕТ ИСКЛЮЧЁН."
             self.API.messages.send(peer_id=int(chatid + 2000000000), message=sendmsg)
 
-
-
-
     def commands_users(self, chatid):
         users = self.API.messages.getChatUsers(chat_id=chatid, fields='first_name')
         sleep(wait_between_req)
@@ -233,6 +258,13 @@ class Bot:
         sleep(wait_between_req)
         return 0
 
+    def commands_showstats(self, chatid):
+        sendmsg = "Вот моя скромная статистика \o/\nВ этот раз я ответила на " + str(self.current_stats['msg']) + " сообщений (всего - " + \
+            str(self.global_stats['msg']) + " сообщений)\nПереслала " + str(self.current_stats['posts']) + " постов (всего - " + \
+            str(self.global_stats['posts']) + " постов)\n"
+        sendmsg+= "А проработала уже " + str(datetime.timedelta(seconds=self.current_stats['uptime'])) +\
+            "часоминутосекунд (всего - " + str(datetime.timedelta(seconds=self.global_stats['uptime'])) + ")!\nКогда перерыв?"
+        self.API.messages.send(peer_id=int(chatid + 2000000000), message=sendmsg)
 
     def command(self, commandmsg):
         uid = commandmsg['user_id']
@@ -246,7 +278,12 @@ class Bot:
             self.commands_users(commandmsg['chat_id'])
         elif txt[0] == "votekick":
             self.commands_votekick(commandmsg['chat_id'], int(txt[1]))
-            return -1
+        elif txt[0] == "poweroff":
+            self.API.messages.send(peer_id=int(commandmsg['chat_id'] + 2000000000), \
+                                   message="Выключаюсь... Ту-ту-ту-туууу... ")
+            sys.exit(0)
+        elif txt[0] == "стата":
+            self.commands_showstats(commandmsg['chat_id'])
 
         return 0
 
@@ -290,11 +327,12 @@ class Bot:
                         uname = api.users.get(user_ids = int(uid))[0]['first_name']
                         print(uname)
                         api.messages.send(peer_id=int(addr_id), message=uname + " " + sendmsg)
+                        self.answered_messages['now'].append(message['id'])
                     except:
-                        self.log_add("cant send msg...", 1)
+
                         return -1
                     else:
-                        self.log_add("successfully sent msg!", 0)
+                        return 0
                     break
             if flag:
                 return 0
@@ -305,11 +343,11 @@ class Bot:
             print(sendmsg)
 
             api.messages.send(peer_id=int(addr_id), message=uname + " " + sendmsg)
+            self.answered_messages['now'].append(message['id'])
         except:
-            self.log_add("cant send msg...", 1)
             return -1
         else:
-            self.log_add("successfully sent msg!", 0)
+
             return 0
 
     def answer(self, count):
@@ -321,11 +359,10 @@ class Bot:
         api = self.API
         names = self.parameters['pseudonames']
         messages = api.messages.get(count=count, time_offset=ANSWER_TIME, preview_length=SYMBOLS_COUNT)['items']
-
+        messages = [x for x in messages if not(x['id'] in self.answered_messages['before'])]
         try:
             print(api.utils.getServerTime())
         except:
-            self.log_add("Error. Cant get messages", 1)
             return -1
         for x in messages:
             print(x['user_id'])
@@ -353,7 +390,6 @@ class Bot:
             config = open(self.config, 'r')
         except OSError as e:
             if e.errno in {errno.EBUSY,errno.EBADF}:  # Failed as the file already exists.
-                #log_add(datetime.datetime.now().strftime("%h:%m:%s")+"/CANT OPEN CONFIG FILE!")
                 pass
             else:  # Something unexpected went wrong so reraise the exception.
                 raise
@@ -403,24 +439,17 @@ class Bot:
                         value = line[1][:-1].split(CONFIG_ARG_DELIM)
                         self.other[key] = value
 
-
     def init_files(self):
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        try:
-            log = os.open(self.log, flags)
-            attributes = os.open(self.attributes, flags)
-        except OSError as e:
-            if e.errno == errno.EEXIST:  # Failed as the file already exists.
-                pass
-            else:  # Something unexpected went wrong so reraise the exception.
-                raise
-        else:  # No exception, so the file must have been created successfully.
-            with os.fdopen(log, 'w') as file_obj:
-                file_obj.write(datetime.datetime.now().strftime("%h:%m:%s")+"/LOGGING STARTED.")
+        return 0
 
 
 if __name__ == '__main__':
-    session = vk.AuthSession(5816048, mnumber, 'pass', scope='wall, messages, groups')
-
-    vk_api = vk.API(session, v = '5.62')
-    a = Bot(vk_api, 'plot')
+    while True:
+        try:
+            session = vk.AuthSession(5816048, 79602662709, 'iloveyuril00k', scope='wall, messages, groups')
+            vk_api = vk.API(session, v = '5.62')
+            a = Bot(vk_api, 'plot')
+        except vk.exceptions.VkAuthError as e:
+            print("AuthError: " + str(e.errno))
+        finally:
+            print("Bot is restarting... or not?")

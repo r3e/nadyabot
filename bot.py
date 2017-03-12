@@ -446,7 +446,7 @@ class Bot:
 if __name__ == '__main__':
     while True:
         try:
-            session = vk.AuthSession(5816048, 79602662709, 'iloveyuril00k', scope='wall, messages, groups')
+            session = vk.AuthSession(5816048, num, 'pass', scope='wall, messages, groups')
             vk_api = vk.API(session, v = '5.62')
             a = Bot(vk_api, 'plot')
         except vk.exceptions.VkAuthError as e:
